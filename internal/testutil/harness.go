@@ -57,9 +57,8 @@ func NewStore(t *testing.T) *store.Store {
 	return s
 }
 
-// NewServer starts an in-process HTTP server backed by the configured
-// Postgres and Redis, and returns it alongside the store for assertions.
-func NewServer(t *testing.T) (*httptest.Server, *store.Store) {
+// NewService builds an ingest Service backed by the configured Postgres and Redis.
+func NewService(t *testing.T) (*ingest.Service, *store.Store) {
 	t.Helper()
 	cfg := config.Load()
 
@@ -73,7 +72,15 @@ func NewServer(t *testing.T) (*httptest.Server, *store.Store) {
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc := ingest.New(s, stats.NewCache(), rdb, log)
+	return svc, s
+}
 
+// NewServer starts an in-process HTTP server backed by the configured
+// Postgres and Redis, and returns it alongside the store for assertions.
+func NewServer(t *testing.T) (*httptest.Server, *store.Store) {
+	t.Helper()
+	svc, s := NewService(t)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := httptest.NewServer(httpapi.NewRouter(svc, log))
 	t.Cleanup(srv.Close)
 	return srv, s
