@@ -31,9 +31,25 @@ func New(s *store.Store, c *stats.Cache, rdb *redis.Client, log *slog.Logger) *S
 	return &Service{store: s, cache: c, rdb: rdb, log: log}
 }
 
-// Stats returns the cached totals for an account.
+// Stats returns the cached totals for an account. If the cache does not have
+// the account's data (e.g. after a service restart), it falls back to Postgres
+// and populates the cache.
 func (s *Service) Stats(accountID string) stats.AccountStats {
-	return s.cache.Get(accountID)
+	st := s.cache.Get(accountID)
+	if st.CallCount > 0 {
+		return st
+	}
+
+	// Fallback to PostgreSQL to hydrate cache on cache miss
+	dbSt, err := s.store.AccountStats(context.Background(), accountID)
+	if err == nil && dbSt.CallCount > 0 {
+		st = stats.AccountStats{
+			CallCount:        dbSt.CallCount,
+			TotalDurationSec: dbSt.TotalDurationSec,
+		}
+		s.cache.Set(accountID, st)
+	}
+	return st
 }
 
 // Ingest stores a delivery and kicks off processing atomically.
