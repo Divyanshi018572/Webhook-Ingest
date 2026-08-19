@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -22,6 +23,7 @@ type Service struct {
 	cache *stats.Cache
 	rdb   *redis.Client
 	log   *slog.Logger
+	wg    sync.WaitGroup
 }
 
 // New builds a Service.
@@ -68,10 +70,12 @@ func (s *Service) Ingest(ctx context.Context, evt Event) error {
 
 	// Recordings are slow to fetch, so that part does not block the provider.
 	// We use a detached context (context.WithoutCancel) so HTTP request completion
-	// does not abort the background worker.
+	// does not abort the background worker, and track the worker with sync.WaitGroup.
 	if rec.RecordingURL != "" {
+		s.wg.Add(1)
 		bgCtx := context.WithoutCancel(ctx)
 		go func() {
+			defer s.wg.Done()
 			if err := s.processRecording(bgCtx, rec); err != nil {
 				s.log.Error("process recording failed", "call_id", rec.CallID, "err", err)
 			}
@@ -86,4 +90,20 @@ func (s *Service) Ingest(ctx context.Context, evt Event) error {
 func (s *Service) processRecording(ctx context.Context, rec store.Event) error {
 	time.Sleep(recordingWork)
 	return s.store.MarkRecordingProcessed(ctx, rec.CallID)
+}
+
+// Close waits for all active background recording tasks to complete before shutdown.
+func (s *Service) Close(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
