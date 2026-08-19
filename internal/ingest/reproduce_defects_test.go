@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/convin/webhook-ingest/internal/ingest"
 	"github.com/convin/webhook-ingest/internal/testutil"
 )
 
@@ -80,6 +81,47 @@ func TestFlaw_RecordingNeverMarkedProcessed(t *testing.T) {
 
 	if !processed {
 		t.Errorf("[FLAW DETECTED] call %s has recording_processed = false, expected true after background processing", callID)
+	}
+}
+
+// TestFlaw_GracefulShutdownWaitsForRecordingWorkers demonstrates Defect #3:
+// On deploy (SIGTERM), the server must drain in-flight background recording
+// goroutines before exiting. Without sync.WaitGroup tracking and Service.Close(),
+// Close returns immediately and recording_processed stays false.
+func TestFlaw_GracefulShutdownWaitsForRecordingWorkers(t *testing.T) {
+	svc, st := testutil.NewService(t)
+	eventID, callID, accountID := testutil.IDs(t, st)
+	ctx := context.Background()
+
+	evt := ingest.Event{
+		EventID:      eventID,
+		CallID:       callID,
+		AccountID:    accountID,
+		Status:       "completed",
+		DurationSec:  143,
+		RecordingURL: "https://recordings.example.com/" + callID + ".wav",
+		OccurredAt:   time.Date(2026, 8, 13, 9, 12, 0, 0, time.UTC),
+	}
+
+	if err := svc.Ingest(ctx, evt); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	// Simulate deploy: shut down while the recording worker is still running
+	// (recordingWork is 50ms; we do not sleep here).
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := svc.Close(shutdownCtx); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	var processed bool
+	row := st.Pool().QueryRow(ctx, `SELECT recording_processed FROM calls WHERE call_id = $1`, callID)
+	if err := row.Scan(&processed); err != nil {
+		t.Fatalf("scan calls: %v", err)
+	}
+	if !processed {
+		t.Errorf("[FLAW DETECTED] recording_processed is false after Close(); graceful shutdown did not drain in-flight recording workers")
 	}
 }
 

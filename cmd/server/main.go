@@ -58,6 +58,9 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Error("shutdown", "err", err)
+		log.Error("shutdown http", "err", err)
+	}
+	if err := svc.Close(shutdownCtx); err != nil {
+		log.Error("shutdown ingest workers", "err", err)
 	}
 }
